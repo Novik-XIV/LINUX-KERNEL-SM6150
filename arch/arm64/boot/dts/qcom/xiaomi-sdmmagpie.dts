@@ -14,16 +14,6 @@
 
 #include "sdmmagpie.dtsi"
 
-// Include non-overlayed xiaomi changes
-#include "xiaomi/pm6150.dtsi"
-#include "xiaomi/pm6150l.dtsi"
-#include "xiaomi/sdmmagpie.dtsi"
-#include "xiaomi/sdmmagpie-camera.dtsi"
-#include "xiaomi/sdmmagpie-pinctrl.dtsi"
-#include "xiaomi/sdmmagpie-regulator.dtsi"
-#include "xiaomi/sdmmagpie-sde.dtsi"
-#include "xiaomi/sdmmagpie-thermal.dtsi"
-
 / {
 	model = "Qualcomm Technologies, Inc. SDMMAGPIE SoC";
 	compatible = "qcom,sdmmagpie";
