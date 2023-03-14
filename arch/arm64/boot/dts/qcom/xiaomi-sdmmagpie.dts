@@ -16,6 +16,7 @@
 
 // Include non-overlayed xiaomi changes
 #include "xiaomi/pm6150.dtsi"
+#include "xiaomi/pm6150l.dtsi"
 
 / {
 	model = "Qualcomm Technologies, Inc. SDMMAGPIE SoC";
