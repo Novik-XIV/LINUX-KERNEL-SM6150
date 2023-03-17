@@ -247,6 +247,7 @@ static bool is_batt_available(struct qpnp_qg *chip)
 	if (!chip->batt_psy)
 		return false;
 
+	/* batt_psy is initialized, set the fcc and fv */
 	qg_notify_charger(chip);
 
 	return true;
@@ -1721,14 +1722,6 @@ static int qg_get_battery_capacity(struct qpnp_qg *chip, int *soc)
 	else
 		*soc = chip->msoc;
 
-	if(chip->charge_status == POWER_SUPPLY_STATUS_CHARGING){
-	        rc = qg_get_battery_current(chip, &ibat);
-                if ((rc >= 0) && (ibat < 0) && (*soc < pre_soc)) {
-			*soc = pre_soc;
-			pr_err ("lct rc=%d,ibat=%d,pre_soc=%d,*soc=%d\n", rc,ibat,pre_soc,*soc);
-		}
-	}
-
 	if (chip->dt.software_optimize_ffc_qg_iterm) {
 		if ((chip->fastcharge_mode_enabled) && (pre_soc == 99)
 			&& (*soc == 100) && (chip->charge_status == POWER_SUPPLY_STATUS_CHARGING)) {
@@ -2101,6 +2094,7 @@ done:
 	return rc;
 }
 
+
 #ifdef CONFIG_K6_CHARGE
 #define FFC_CHG_TERM_SWD_CURRENT	-600
 #define FFC_CHG_TERM_NVT_CURRENT	-550
@@ -2263,7 +2257,7 @@ static int qg_psy_set_property(struct power_supply *psy,
 			pr_warn("Capacity learning active!\n");
 			return 0;
 		}
-		if (pval->intval <= 0) {
+		if (pval->intval <= 0 || pval->intval > chip->cl->nom_cap_uah) {
 			pr_err("charge_full is out of bounds\n");
 			return -EINVAL;
 		}
@@ -2723,7 +2717,8 @@ static int qg_charge_full_update(struct qpnp_qg *chip)
 		 * force a recharge only if SOC <= recharge SOC and
 		 * we have not started charging.
 		 */
-		if (input_present && chip->msoc <= recharge_soc && chip->charge_status != POWER_SUPPLY_STATUS_CHARGING) {
+		if (input_present && chip->msoc <= recharge_soc &&
+				chip->charge_status != POWER_SUPPLY_STATUS_CHARGING) {
 			/* Force recharge */
 			prop.intval = 0;
 			rc = power_supply_set_property(chip->batt_psy,
@@ -3060,10 +3055,6 @@ static void profile_load_work(struct work_struct *work)
 				struct qpnp_qg,
 				profile_load_work.work);
 
-#ifdef CONFIG_K9A_CHARGE
-	return;
-#endif
-
 	rc = qg_setup_battery(chip);
 	if (chip->profile_judge_done) {
 		qg_sanitize_sdam(chip);
@@ -3240,14 +3231,12 @@ static int qg_notifier_cb(struct notifier_block *nb,
 		 */
 		pm_stay_awake(chip->dev);
 		schedule_work(&chip->qg_status_change_work);
-#ifndef CONFIG_K9A_CHARGE
 		if ((strcmp(psy->desc->name, "usb") == 0)){
 			if (chip->qg_psy)
 			{
 				power_supply_changed(chip->qg_psy);
 			}
 		}
-#endif
 	}
 
 	return NOTIFY_OK;
@@ -3504,13 +3493,8 @@ static int get_batt_id_ohm(struct qpnp_qg *chip, u32 *batt_id_ohm)
 static int qg_load_battery_profile(struct qpnp_qg *chip)
 {
 	struct device_node *node = chip->dev->of_node;
-#ifdef CONFIG_K6_CHARGE
 	struct device_node *profile_node;
-#else
-	struct device_node *batt_node, *profile_node;
-#endif
-        int rc, tuple_len, len, i = 0;
-
+	int rc, tuple_len, len, i = 0;
 #ifdef CONFIG_BATT_VERIFY_BY_DS28E16
 	union power_supply_propval pval = {0, };
 	if (!chip->dt.qg_page0_unused) {
@@ -3522,19 +3506,11 @@ static int qg_load_battery_profile(struct qpnp_qg *chip)
 	int avail_age_level = 0;
 #endif
 
-#ifdef CONFIG_K6_CHARGE
 	chip->batt_node = of_find_node_by_name(node, "qcom,battery-data");
 	if (!chip->batt_node) {
 		pr_err("Batterydata not available\n");
 		return -ENXIO;
 	}
-#else
-	batt_node = of_find_node_by_name(node, "qcom,battery-data");
-	if (!batt_node) {
-		pr_err("Batterydata not available\n");
-		return -ENXIO;
-	}
-#endif
 
 #ifdef CONFIG_BATT_VERIFY_BY_DS28E16
 	if (!chip->dt.qg_page0_unused) {
@@ -3545,7 +3521,6 @@ static int qg_load_battery_profile(struct qpnp_qg *chip)
 				pr_err("qg_load_battery_profile : get romid error.\n");
 			}
 		}
-
 #ifdef CONFIG_K6_CHARGE
 		if (is_batt_vendor_swd) {
 			pr_err("is_batt_vendor_swd is %d\n", is_batt_vendor_swd);
@@ -3558,9 +3533,11 @@ static int qg_load_battery_profile(struct qpnp_qg *chip)
 							chip->batt_id_ohm / 1000, "K6_nvt_5020mah");
 			chip->profile_judge_done = true;
 		}
+
 #endif
 
-#ifdef CONFIG_K9A_CHARGE
+#ifndef CONFIG_K6_CHARGE
+		// the battery is xiaomi's batt; FC code, custom id
 		if (pval.intval == true) {
 			rc = power_supply_get_property(chip->max_verify_psy,
 					POWER_SUPPLY_PROP_PAGE0_DATA, &pval);
@@ -3568,30 +3545,25 @@ static int qg_load_battery_profile(struct qpnp_qg *chip)
 				pr_err("qg_load_battery_profile : get page0 error.\n");
 			} else {
 				if ((pval.arrayval[0] == 'S') || (pval.arrayval[0] == 'X')) {
-					profile_node = of_batterydata_get_best_profile(batt_node,
-						chip->batt_id_ohm / 1000, "K9A_sunwoda_4250mah");
+					profile_node = of_batterydata_get_best_profile(chip->batt_node,
+						chip->batt_id_ohm / 1000, "G7BSWDBM4P_4500mAh");
 					chip->profile_judge_done = true;
 				} else if ((pval.arrayval[0] == 'N') || (pval.arrayval[0] == 'A')) {
 					profile_node = of_batterydata_get_best_profile(chip->batt_node,
 						chip->batt_id_ohm / 1000, "G7BNVTBM4P_4500mAh");
 					chip->profile_judge_done = true;
-				} else if ((pval.arrayval[0] == 'C') || (pval.arrayval[0] == 'V')) {
-					profile_node = of_batterydata_get_best_profile(batt_node,
-						chip->batt_id_ohm / 1000, "K9A_cosmx_4250mah");
-					chip->profile_judge_done = true;
 				}
 			}
 		}
 #endif
-
 		if (chip->profile_judge_done == false) {
 			if (chip->profile_loaded == false) {
 #ifdef CONFIG_K6_CHARGE
 				profile_node = of_batterydata_get_best_profile(chip->batt_node,
 					chip->batt_id_ohm / 1000, "K6_sunwoda_5020mah");
 #else
-				profile_node = of_batterydata_get_best_profile(batt_node,
-					chip->batt_id_ohm / 1000, "K9A_cosmx_4250mah");
+				profile_node = of_batterydata_get_best_profile(chip->batt_node,
+					chip->batt_id_ohm / 1000, "G7BSWDBM4P_4500mAh");
 #endif
 			} else {
 				return 0;
@@ -3628,7 +3600,7 @@ static int qg_load_battery_profile(struct qpnp_qg *chip)
 			chip->batt_age_level = avail_age_level;
 		}
 	} else {
-	profile_node = of_batterydata_get_best_profile(batt_node,
+		profile_node = of_batterydata_get_best_profile(chip->batt_node,
 				chip->batt_id_ohm / 1000, NULL);
 	}
 
@@ -3638,6 +3610,7 @@ static int qg_load_battery_profile(struct qpnp_qg *chip)
 		return rc;
 	}
 #endif
+
 	rc = of_property_read_string(profile_node, "qcom,battery-type",
 				&chip->bp.batt_type_str);
 	if (rc < 0) {
@@ -4032,10 +4005,11 @@ use_pon_ocv:
 			calcualte_soc = DIV_ROUND_UP(((pon_soc - cutoff_soc) * 100),
 						(full_soc - cutoff_soc));
 			soc_raw = soc * 100;
-                } else {
+		} else {
 			calcualte_soc = pon_soc;
 			soc_raw = pon_soc * 100;
-                }
+		}
+//	}
 
 	if (use_pon_ocv == false) {
 		soc = calcualte_soc < shutdown[SDAM_SOC] ? (shutdown[SDAM_SOC] - 1) : shutdown[SDAM_SOC];
@@ -5534,7 +5508,6 @@ static int qpnp_qg_probe(struct platform_device *pdev)
 	memset(chip->ds_status, 0, 8);
 	memset(chip->ds_page0, 0, 16);
 	retry_batt_profile = 0;
-	//retry_battery_authentic_result = 0;
 	retry_ds_romid = 0;
 	retry_ds_status = 0;
 	retry_ds_page0 = 0;
